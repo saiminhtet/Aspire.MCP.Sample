@@ -1,4 +1,5 @@
 using McpSample.AspNetCoreSseServer;
+using Microsoft.Extensions.DependencyInjection;
 using ModelContextProtocol;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -7,11 +8,15 @@ var builder = WebApplication.CreateBuilder(args);
 builder.AddServiceDefaults();
 builder.Services.AddProblemDetails();
 
+// Register ISqlConnectionFactory and Tools for DI
+builder.Services.AddSingleton<ISqlConnectionFactory, SqlConnectionFactory>();
+//builder.Services.AddSingleton<Tools>();
+
 // add MCP server
 builder.Services
     .AddMcpServer()
-    .WithTools<Jokes>()
-    .WithTools<WeatherTool>();
+    .WithHttpTransport()
+    .WithTools<Tools>();
 //.WithToolsFromAssembly();
 var app = builder.Build();
 

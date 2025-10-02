@@ -3,8 +3,7 @@ using System.ComponentModel;
 
 namespace McpSample.AspNetCoreSseServer;
 
-[McpServerToolType]
-public class Jokes
+public partial class Tools
 {
     [McpServerTool, Description("Returns a joke about a specific topic")]
     public string GetJoke(string topic)

@@ -8,6 +8,8 @@
 @using System.Text.RegularExpressions
 @using ModelContextProtocol.Client
 @using System.Text
+@using System.ClientModel
+@using OpenAI.Chat;
 @inject IMcpClient McpClient
 @attribute [StreamRendering(true)]
 @rendermode InteractiveServer
@@ -152,7 +154,20 @@
         tools = await McpClient.ListToolsAsync();
 
         // system message
-        ChatMessages.Add(new ChatMessage(ChatRole.System, "You are a helpful assistant. You always replies using text and emojis. You never generate HTML or Markdown. You only do what the user ask you to do. If you don't have a function to answer a question, you just answer que question"));
+        ChatMessages.Add(new Microsoft.Extensions.AI.ChatMessage(
+            ChatRole.System,
+            @"
+            You are a helpful assistant.
+            You always replies using text and emojis.
+            You never generate HTML or Markdown.
+            You only do what the user ask you to do.
+            If you don't have a function to answer a question, you just answer que question.
+            "));
+    }
+
+    private async Task GetMCPServerTools()
+    {
+        
     }
 
     private async Task AskQuestion(MouseEventArgs e)
@@ -169,7 +184,7 @@
             }
 
             Logger.LogInformation($"Add user question: {userQuestion}");
-            ChatMessages.Add(new ChatMessage(ChatRole.User, userQuestion));
+            ChatMessages.Add(new Microsoft.Extensions.AI.ChatMessage(ChatRole.User, userQuestion));
 
             // Clear the userQuestion textbox
             userQuestion = string.Empty;
@@ -220,17 +235,43 @@
             }
             else
             {
-                if (string.IsNullOrEmpty(apiKey))
+                // if (string.IsNullOrEmpty(apiKey))
+                // {
+                //     clientMode = "Azure with Default Credentials";
+                //     Logger.LogInformation("Using DefaultAzureCredential");
+                //     client = new AzureOpenAIClient(
+                //         new Uri(endpoint),
+                //         new DefaultAzureCredential())
+                //         .AsChatClient(deploymentName)
+                //         .AsBuilder()
+                //         .UseFunctionInvocation()
+                //         .Build();
+                // }
+                if (endpoint.Contains("api.openai.com", StringComparison.OrdinalIgnoreCase))
                 {
-                    clientMode = "Azure with Default Credentials";
-                    Logger.LogInformation("Using DefaultAzureCredential");
-                    client = new AzureOpenAIClient(
-                        new Uri(endpoint),
-                        new DefaultAzureCredential())
-                        .AsChatClient(deploymentName)
-                        .AsBuilder()
-                        .UseFunctionInvocation()
-                        .Build();
+                    // clientMode = "Azure with Default Credentials";
+                    // Logger.LogInformation("Using DefaultAzureCredential");
+                    // client = new AzureOpenAIClient(
+                    //     new Uri(endpoint),
+                    //     new ApiKeyCredential(apiKey))
+                    //     .AsChatClient(deploymentName)
+                    //     .AsBuilder()
+                    //     .UseFunctionInvocation()
+                    //     .Build();
+
+                    // Initialize the ChatClient with your model and API key   
+                    clientMode = "Using OpenAI API and ApiKey";
+                    Logger.LogInformation("Using OpenAI API ApiKey");
+
+                    client = new ChatClient(
+                     model: deploymentName, // Or your desired model
+                     apiKey: apiKey
+                    ).AsIChatClient()
+                    .AsBuilder()
+                    .UseFunctionInvocation()
+                    .Build();
+
+                   
                 }
                 else
                 {

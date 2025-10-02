@@ -3,8 +3,7 @@ using System.ComponentModel;
 
 namespace McpSample.AspNetCoreSseServer;
 
-[McpServerToolType]
-public class WeatherTool
+public partial class Tools
 {
     [McpServerTool, Description("Returns the current weather for a specific city")]
     public string GetWeatherForCity(string cityName)

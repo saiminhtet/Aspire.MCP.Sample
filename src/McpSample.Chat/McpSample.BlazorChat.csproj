@@ -15,7 +15,7 @@
 		<PackageReference Include="Microsoft.Extensions.AI.Ollama" Version="9.4.0-preview.1.25207.5" />
 		<PackageReference Include="Microsoft.Extensions.AI.OpenAI" Version="9.4.0-preview.1.25207.5" />
 		<PackageReference Include="ModelContextProtocol" Version="0.1.0-preview.10" />
-		<PackageReference Include="OpenAI" Version="2.2.0-beta.4" />
+		<PackageReference Include="OpenAI" Version="2.5.0" />
 	</ItemGroup>
 
 
