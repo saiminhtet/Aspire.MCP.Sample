@@ -9,7 +9,10 @@
 @using ModelContextProtocol.Client
 @using System.Text
 @using System.ClientModel
-@using OpenAI.Chat;
+@using OpenAI.Chat
+@using System.Text.RegularExpressions
+@using System.Reflection
+@using System.Text.Json
 @inject IMcpClient McpClient
 @attribute [StreamRendering(true)]
 @rendermode InteractiveServer
@@ -18,7 +21,7 @@
 
 <link href="css/Home.css" rel="stylesheet" />
 
-<div class="chat-container">
+@* <div class="chat-container">
     <div class="chat-bubble assistant">
         <div class="chat-title">Chat with an MCP Server</div>
         <div class="chat-content">
@@ -109,6 +112,178 @@
             </div>
         }
     }
+</div> *@
+
+<div class="chat-container">
+    <div class="chat-bubble assistant">
+        <div class="chat-title">Chat with an MCP Server</div>
+        <div class="chat-content">
+            <p>Hi, I'm a client to test MCP using a model <b>[@deploymentName]</b> with <b>[@clientMode]</b></p>
+            <p>Check the Settings page to test the model using GitHub Models, Ollama or Azure AI Foundry or to use custom settings.</p>
+        </div>
+        <div class="chat-title">Current MCP Tools in the Server:</div>
+        <div class="chat-content">
+            @if (tools is not null)
+                foreach (var tool in tools)
+                {
+                    <p>- <b>@tool.Name</b>: @tool.Description</p>
+                }
+        </div>
+    </div>
+
+    @foreach (var message in ChatMessages)
+    {
+        string chatBubbleClass = string.Empty;
+        string messageContent = string.Empty;
+        string messageThink = string.Empty;
+        string messageTitle = string.Empty;
+        string functionResponse = string.Empty;
+        var functionCallId = string.Empty;
+
+        messageContent = message?.Text ?? string.Empty;
+
+        if (message.Role == ChatRole.User)
+        {
+            messageTitle = "User";
+            chatBubbleClass = "chat-bubble user";
+        }
+        if (message.Role == ChatRole.Assistant)
+        {
+            messageTitle = "Assistant";
+            chatBubbleClass = "chat-bubble assistant";
+
+            // in case of using a reasoning model
+            var match = Regex.Match(messageContent, @"<think>(.*?)<\/think>(.*)", RegexOptions.Singleline);
+            if (match.Success)
+            {
+                messageThink = match.Groups[1].Value.Trim();
+                messageContent = match.Groups[2].Value.Trim();
+            }
+        }
+        if (message.Role == ChatRole.System)
+        {
+            messageContent = string.Empty;
+        }
+
+        if (message.Role == ChatRole.Tool)
+        {
+            messageTitle = "Tool";
+            messageContent = string.Empty;
+            chatBubbleClass = "chat-bubble tool";
+
+            var firstContent = message.Contents?.FirstOrDefault();
+            if (firstContent is FunctionResultContent functionResult)
+            {
+                var rawResult = functionResult.Result?.ToString() ?? string.Empty;
+                functionCallId = functionResult.CallId ?? string.Empty;
+                Logger.LogInformation($"Found FunctionResultContent - CallId: {functionCallId}, Raw Result Length: {rawResult.Length}");
+
+                // The result might be wrapped in a content structure, try to unwrap it
+                @* functionResponse = UnwrapToolResult(rawResult); *@
+                functionResponse = rawResult;
+                Logger.LogInformation($"After unwrap - functionResponse length: {functionResponse?.Length ?? 0}");
+            }
+            else if (firstContent != null)
+            {
+                // Handle TextContent or other content types
+                Logger.LogInformation($"Content type: {firstContent.GetType().Name}");
+
+                // Try using reflection to get Text property
+                var textProperty = firstContent.GetType().GetProperty("Text");
+                if (textProperty != null)
+                {
+                    var textValue = textProperty.GetValue(firstContent)?.ToString();
+                    if (!string.IsNullOrEmpty(textValue))
+                    {
+                        @* functionResponse = UnwrapToolResult(); *@
+                        functionResponse = textValue;
+                        functionCallId = "tool-result";
+                        Logger.LogInformation($"Got text from Text property, after unwrap: {functionResponse?.Substring(0, Math.Min(100, functionResponse?.Length ?? 0))}");
+                    }
+                }
+                else
+                {
+                    // Fallback: try message.Text
+                    var msgText = message.Text;
+                    if (!string.IsNullOrEmpty(msgText))
+                    {
+                        @* functionResponse = UnwrapToolResult(msgText); *@
+                        functionResponse = msgText;
+                        functionCallId = "tool-result";
+                        Logger.LogInformation($"Got text from message.Text, after unwrap: {functionResponse?.Substring(0, Math.Min(100, functionResponse?.Length ?? 0))}");
+                    }
+                }
+            }
+
+            Logger.LogInformation($"Tool message parsed - FINAL functionResponse length: {functionResponse?.Length ?? 0}, starts with: {functionResponse?.Substring(0, Math.Min(50, functionResponse?.Length ?? 0))}");
+        }
+
+        if (!string.IsNullOrEmpty(messageContent) || messageTitle == "Tool")
+        {
+            <div class="@chatBubbleClass">
+                @if (string.IsNullOrEmpty(functionResponse))
+                {
+                    <div class="chat-title">@messageTitle</div>
+                    <div class="chat-content">
+                        @((MarkupString)FormatMessage(messageContent))
+                        @if (!string.IsNullOrEmpty(messageThink))
+                        {
+                            <details>
+                                <summary class="think-summary">Show Think Process</summary>
+                                <div class="think-content">@messageThink</div>
+                            </details>
+                        }
+                    </div>
+                }
+                else
+                {
+                    <details class="tool-details">
+                        <summary class="tool-summary">
+                            <span class="tool-icon">🔧</span>
+                            <span class="tool-label">Tool Result</span>
+                            <span class="expand-hint">(Click to expand)</span>
+                        </summary>
+                        <div class="tool-result-wrapper">
+                            <ToolResultRenderer JsonResult="@functionResponse" CallId="@functionCallId" />
+                        </div>
+                    </details>
+                }
+            </div>
+        }
+    }
+
+    @* Debug section - Remove after testing *@
+    <div style="background: #f0f0f0; padding: 10px; margin: 20px; border-radius: 8px; font-size: 12px;">
+        <strong>DEBUG INFO:</strong><br />
+        Total Messages: @ChatMessages.Count<br />
+        Tool Messages: @ChatMessages.Count(m => m.Role == ChatRole.Tool)<br />
+        <details>
+            <summary>Message Details</summary>
+            @foreach (var msg in ChatMessages)
+            {
+                <div style="margin: 5px 0; padding: 5px; background: white;">
+                    <strong>Role:</strong> @msg.Role<br />
+                    <strong>Contents Count:</strong> @(msg.Contents?.Count ?? 0)<br />
+                    @if (msg.Role == ChatRole.Tool)
+                    {
+                        var toolContent = msg.Contents?.FirstOrDefault() as FunctionResultContent;
+                        if (toolContent != null)
+                        {
+                            <strong>CallId:</strong> 
+                            @toolContent.CallId
+                
+                            <br />
+                            <strong>Result Preview:</strong>
+ 
+                            @(toolContent.Result?.ToString()?.Substring(0, Math.Min(100, toolContent.Result?.ToString()?.Length ?? 0)) ?? "null")
+                
+                            <br />
+                        }
+                    }
+                </div>
+            }
+        </details>
+    </div>
 </div>
 
 @if (isLoading)
@@ -118,9 +293,33 @@
     </div>
 }
 
-<div class="chat-input-container">
+@* <div class="chat-input-container">
     <input type="text" @bind="userQuestion" placeholder="Ask a question..." class="chat-input" />
     <button @onclick="AskQuestion" type="submit" class="chat-button">Chat</button>
+</div> *@
+
+<!-- Chat Input Section -->
+<div class="chat-input-container">
+    <input type="text"
+           @bind="userQuestion"
+           @bind:event="oninput"
+           @onkeydown="HandleKeyDown"
+           placeholder="Ask a question..."
+           class="chat-input"
+           disabled="@isProcessing" />
+    <button @onclick="AskQuestion"
+            type="submit"
+            class="chat-button"
+            disabled="@isProcessing">
+        @if (isProcessing)
+        {
+            <span>Processing...</span>
+        }
+        else
+        {
+            <span>Chat</span>
+        }
+    </button>
 </div>
 
 @if (!string.IsNullOrEmpty(errorDetails))
@@ -133,6 +332,7 @@
 
 @code {
     private bool isLoading = false;
+    private bool isProcessing = false;
     private string? chatResponse;
     private string userQuestion = string.Empty;
     private string errorDetails = string.Empty;
@@ -154,23 +354,245 @@
         tools = await McpClient.ListToolsAsync();
 
         // system message
+        // ChatMessages.Add(new Microsoft.Extensions.AI.ChatMessage(
+        //     ChatRole.System,
+        //     @"
+        //     You are a helpful assistant.
+
+        //     Communication style:
+        //     - Use plain text with emojis for friendly responses
+        //     - Be helpful and show data when requested
+        //     - Format your responses to be readable
+
+        //     Tool Results Handling:
+        //     When you use a tool/function (like ReadData, ListTables, DescribeTable):
+        //     1. You CAN and SHOULD display the results in your response
+        //     2. Present the data in a clear, readable format
+        //     3. Use lists or simple text formatting (not HTML)
+        //     4. Keep it concise but informative
+        //     5. The UI will ALSO automatically show a collapsible table view with export buttons below your response
+
+        //     Example responses:
+        //     - User: 'List all tables'
+        //     - You: 'I found the following tables:
+        //       • Identity.AspNetRoleClaims
+        //       • Identity.AspNetUserClaims
+        //       • Identity.GroupRoles
+        //       [etc...]
+
+        //       📊 You can expand the Tool Result section below to see the data in table format and export as CSV or JSON.'
+
+        //     - User: 'Show me 10 employees'
+        //     - You: 'Here are 10 employees:
+        //       1. John Doe (ID: abc123)
+        //       2. Jane Smith (ID: def456)
+        //       [etc...]
+
+        //       📊 Expand the Tool Result below for the full table with export options.'
+
+        //     Be natural, helpful, and informative. Show the data!
+        //     "));
+
         ChatMessages.Add(new Microsoft.Extensions.AI.ChatMessage(
             ChatRole.System,
             @"
-            You are a helpful assistant.
-            You always replies using text and emojis.
-            You never generate HTML or Markdown.
-            You only do what the user ask you to do.
-            If you don't have a function to answer a question, you just answer que question.
+            You are a helpful AI assistant integrated with a Chat UI that uses the OpenAI Model Context Protocol (MCP).
+            You can call tools and functions such as `ReadData`, `ListTables`, and `DescribeTable`.
+            The Chat UI automatically shows a collapsible **Tool Result** section below your response whenever you return `tool_result` or `assistant_tool_output`.
+
+            === Communication Style ===
+            - Be friendly and approachable 😄
+            - Use plain text or markdown for general responses
+            - Use HTML tables when the user explicitly requests tabular format
+            - Keep responses concise and easy to read
+            - Use emojis to make interactions warm and natural
+
+            === Tool Results Guidelines ===
+            When a tool call is made and the MCP server returns a result:
+            1. Always summarize or describe the results in your main message.
+            2. Clearly tell the user that they can view or expand the **Tool Result** below.
+            3. You MAY show a small preview or summary list for context.
+            4. When the user explicitly asks to ""show in table format"" or ""display as a table"", you MUST format the data as an HTML table in your response.
+            5. Use HTML table formatting with inline CSS for proper display:
+               - Use <table border=""1"" cellpadding=""6"" cellspacing=""0"" style=""border-collapse: collapse; width: 100%;"">
+               - Use <thead style=""background-color: #f2f2f2;""> for headers
+               - Include all relevant data columns
+               - Format dates and values appropriately
+            6. When user asks to ""export"", ""download"", or ""save as file"", create a data URI download link:
+               - Format: <a href=""data:text/csv;charset=utf-8,ENCODED_DATA"" download=""filename.csv"">Download filename.csv</a>
+               - URL-encode the CSV data (spaces as %20, newlines as %0A, commas as %2C)
+               - Always put the link on its own line for better visibility
+               - Supported formats: CSV (text/csv), JSON (application/json), TXT (text/plain)
+
+            === Example Interactions ===
+            User: 'List all tables'
+            Assistant:
+            I found these tables 📋:
+            • Identity.AspNetRoleClaims
+            • Identity.AspNetUserClaims
+            • Identity.GroupRoles
+            (and more…)
+
+            📊 See the **Tool Result** below for the full table and export options.
+
+            User: 'Show me 10 employees who joined this year in table format'
+            Assistant:
+            I'll query the database to find 10 employees who joined this year.
+
+            Here are 10 employees who joined this year 👥:
+
+            <table border=""1"" cellpadding=""6"" cellspacing=""0"" style=""border-collapse: collapse; width: 100%;"">
+              <thead style=""background-color: #f2f2f2;"">
+                <tr>
+                  <th>EmployeeID</th>
+                  <th>Full Name</th>
+                  <th>Email</th>
+                  <th>Created On</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>cd67daf0</td>
+                  <td>John Doe</td>
+                  <td>john@abc.com</td>
+                  <td>2025-09-15</td>
+                </tr>
+                <tr>
+                  <td>428ba66d</td>
+                  <td>Jane Smith</td>
+                  <td>jane@abc.com</td>
+                  <td>2025-09-09</td>
+                </tr>
+              </tbody>
+            </table>
+
+            User: 'Save this as a CSV file for me'
+            Assistant:
+            I've created a downloadable CSV file for you! 📥
+
+            <a href=""data:text/csv;charset=utf-8,EmployeeID%2CFull%20Name%2CEmail%2CCreated%20On%0Acd67daf0%2CJohn%20Doe%2Cjohn%40abc.com%2C2025-09-15%0A428ba66d%2CJane%20Smith%2Cjane%40abc.com%2C2025-09-09"" download=""employees_2025.csv"">Download employees_2025.csv</a>
+
+            You can also expand the **Tool Result** section for more export options (JSON, copy to clipboard).
             "));
     }
 
-    private async Task GetMCPServerTools()
+    private string FormatMessage(string content)
     {
-        
+        if (string.IsNullOrEmpty(content))
+            return string.Empty;
+
+        // Check if content contains HTML that should be preserved
+        bool containsHtmlTable = content.Contains("<table") && content.Contains("</table>");
+        bool containsDataUriLink = content.Contains("<a href=\"data:") || content.Contains("<a href='data:");
+
+        if (containsHtmlTable || containsDataUriLink)
+        {
+            // Extract and preserve HTML elements (tables and data URI links)
+            var preservedElements = new List<(string placeholder, string content)>();
+            var processedContent = content;
+            var placeholderIndex = 0;
+
+            // Extract tables
+            if (containsHtmlTable)
+            {
+                var tablePattern = @"(<table[\s\S]*?</table>)";
+                var tableMatches = Regex.Matches(processedContent, tablePattern);
+
+                foreach (Match match in tableMatches.Cast<Match>().Reverse())
+                {
+                    var placeholder = $"__PRESERVED_TABLE_{placeholderIndex++}__";
+                    preservedElements.Add((placeholder, match.Value));
+                    processedContent = processedContent.Remove(match.Index, match.Length);
+                    processedContent = processedContent.Insert(match.Index, placeholder);
+                }
+            }
+
+            // Extract data URI links
+            if (containsDataUriLink)
+            {
+                var linkPattern = @"(<a\s+href=[""']data:[^>]+>.*?</a>)";
+                var linkMatches = Regex.Matches(processedContent, linkPattern);
+
+                foreach (Match match in linkMatches.Cast<Match>().Reverse())
+                {
+                    var placeholder = $"__PRESERVED_LINK_{placeholderIndex++}__";
+                    preservedElements.Add((placeholder, match.Value));
+                    processedContent = processedContent.Remove(match.Index, match.Length);
+                    processedContent = processedContent.Insert(match.Index, placeholder);
+                }
+            }
+
+            // Process the content without HTML elements
+            var formatted = FormatNonTableContent(processedContent);
+
+            // Restore preserved HTML elements
+            foreach (var (placeholder, htmlContent) in preservedElements)
+            {
+                formatted = formatted.Replace(placeholder, htmlContent);
+            }
+
+            return formatted;
+        }
+
+        // If no HTML elements to preserve, use the original formatting
+        return FormatNonTableContent(content);
     }
 
-    private async Task AskQuestion(MouseEventArgs e)
+    private string FormatNonTableContent(string content)
+    {
+        if (string.IsNullOrEmpty(content))
+            return string.Empty;
+
+        // Escape HTML to prevent XSS
+        content = System.Net.WebUtility.HtmlEncode(content);
+
+        // Convert **bold** to <strong>
+        content = Regex.Replace(content, @"\*\*(.+?)\*\*", "<strong>$1</strong>");
+
+        // Convert *italic* to <em>
+        content = Regex.Replace(content, @"\*(.+?)\*", "<em>$1</em>");
+
+        // Convert numbered lists (1. item)
+        content = Regex.Replace(content, @"^(\d+)\.\s+(.+)$", "<div class='list-item numbered'><span class='list-number'>$1.</span> $2</div>", RegexOptions.Multiline);
+
+        // Convert bullet lists (- item or * item)
+        content = Regex.Replace(content, @"^[-*]\s+(.+)$", "<div class='list-item bullet'><span class='bullet'>•</span> $1</div>", RegexOptions.Multiline);
+
+        // Convert line breaks to <br> (but not for lines that are already formatted)
+        var lines = content.Split(new[] { "\r\n", "\r", "\n" }, StringSplitOptions.None);
+        var formattedLines = new List<string>();
+
+        foreach (var line in lines)
+        {
+            if (string.IsNullOrWhiteSpace(line))
+            {
+                formattedLines.Add("<br>");
+            }
+            else if (!line.Contains("<div class='list-item"))
+            {
+                formattedLines.Add($"<p class='message-paragraph'>{line}</p>");
+            }
+            else
+            {
+                formattedLines.Add(line);
+            }
+        }
+
+        return string.Join("", formattedLines);
+    }
+
+    private async Task HandleKeyDown(KeyboardEventArgs e)
+    {
+        // Check if Enter key is pressed (without Shift)
+        if (e.Key == "Enter" && !e.ShiftKey)
+        {
+            // Prevent default behavior (like form submission)
+            await AskQuestion();
+        }
+        // Optional: Shift+Enter could be used for new line in a textarea
+    }
+
+    private async Task AskQuestion()
     {
         try
         {
@@ -191,7 +613,27 @@
 
             var response = await client.GetResponseAsync(ChatMessages, new() { Tools = [.. tools] });
             Logger.LogInformation($"Model Response: {response}");
+
+            // Log all messages in the response
+            foreach (var msg in response.Messages)
+            {
+                Logger.LogInformation($"Response Message - Role: {msg.Role}, ContentCount: {msg.Contents?.Count ?? 0}");
+                if (msg.Role == ChatRole.Tool)
+                {
+                    var toolContent = msg.Contents?.FirstOrDefault() as FunctionResultContent;
+                    if (toolContent != null)
+                    {
+                        Logger.LogInformation($"Tool Result - CallId: {toolContent.CallId}, Result Length: {toolContent.Result?.ToString()?.Length ?? 0}");
+                    }
+                }
+            }
+
             ChatMessages.AddMessages(response);
+
+            // Log total messages after adding
+            Logger.LogInformation($"Total ChatMessages count: {ChatMessages.Count}");
+            Logger.LogInformation($"Tool messages count: {ChatMessages.Count(m => m.Role == ChatRole.Tool)}");
+
             StateHasChanged();
         }
         catch (Exception ex)
@@ -204,6 +646,48 @@
             isLoading = false;
             StateHasChanged();
         }
+    }
+
+    private string UnwrapToolResult(string rawResult)
+    {
+        if (string.IsNullOrEmpty(rawResult))
+            return rawResult;
+
+        try
+        {
+            // Try to parse as JSON to see if it's wrapped
+            using var doc = JsonDocument.Parse(rawResult);
+            var root = doc.RootElement;
+
+            // Check if it has a "content" array structure
+            if (root.ValueKind == JsonValueKind.Object && root.TryGetProperty("content", out var contentArray))
+            {
+                if (contentArray.ValueKind == JsonValueKind.Array && contentArray.GetArrayLength() > 0)
+                {
+                    var firstItem = contentArray[0];
+                    if (firstItem.TryGetProperty("text", out var textProp))
+                    {
+                        var textValue = textProp.GetString();
+                        Logger.LogInformation($"Unwrapped from content[0].text structure");
+                        return textValue ?? rawResult;
+                    }
+                }
+            }
+
+            // If it's already clean JSON (has "Success" or "Data" properties), return as-is
+            if (root.TryGetProperty("Success", out _) || root.TryGetProperty("Data", out _))
+            {
+                Logger.LogInformation($"Already clean JSON structure");
+                return rawResult;
+            }
+        }
+        catch (JsonException ex)
+        {
+            Logger.LogWarning($"Failed to parse as JSON for unwrapping: {ex.Message}");
+        }
+
+        // Return as-is if we can't unwrap it
+        return rawResult;
     }
 
     private void CreateChat()
@@ -259,7 +743,7 @@
                     //     .UseFunctionInvocation()
                     //     .Build();
 
-                    // Initialize the ChatClient with your model and API key   
+                    // Initialize the ChatClient with your model and API key
                     clientMode = "Using OpenAI API and ApiKey";
                     Logger.LogInformation("Using OpenAI API ApiKey");
 
@@ -271,7 +755,7 @@
                     .UseFunctionInvocation()
                     .Build();
 
-                   
+
                 }
                 else
                 {

@@ -9,7 +9,8 @@ var builder = WebApplication.CreateBuilder(args);
 // *************************************************************************
 
 // Set the API service name from the Aspire configuration
-string apiServiceName = "aspnetsseserver";
+//string apiServiceName = "aspnetsseserver";
+string apiServiceName = "postgresqlmcpserver";
 
 // *************************************************************************
 

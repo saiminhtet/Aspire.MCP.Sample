@@ -1,0 +1,631 @@
+@using System.Text.Json
+@using System.Text.RegularExpressions
+@using System.Text
+@using Microsoft.JSInterop
+@inject IJSRuntime JSRuntime
+
+@code {
+    [Parameter]
+    public string? JsonResult { get; set; }
+
+    [Parameter]
+    public string? CallId { get; set; }
+
+    private List<JsonElement>? _currentTableData;
+    private List<string>? _currentTableColumns;
+
+    private RenderFragment RenderResult => builder =>
+    {
+        if (string.IsNullOrEmpty(JsonResult))
+        {
+            builder.AddContent(0, "No result available");
+            return;
+        }
+
+        try
+        {
+            var jsonDoc = JsonDocument.Parse(JsonResult);
+            var root = jsonDoc.RootElement;
+            RenderJsonElement(builder, root, 0);
+        }
+        catch (JsonException)
+        {
+            // If it's not JSON, just display as text
+            builder.OpenElement(0, "div");
+            builder.AddAttribute(1, "class", "tool-result-text");
+            builder.AddContent(2, JsonResult);
+            builder.CloseElement();
+        }
+    };
+
+    private void RenderJsonElement(Microsoft.AspNetCore.Components.Rendering.RenderTreeBuilder builder, JsonElement element, int sequence)
+    {
+        if (element.ValueKind == JsonValueKind.Object)
+        {
+            // Check if this is a DbOperationResult with data
+            if (element.TryGetProperty("Success", out var success) &&
+                element.TryGetProperty("Data", out var data))
+            {
+                RenderDbOperationResult(builder, element, sequence);
+            }
+            else
+            {
+                RenderObject(builder, element, sequence);
+            }
+        }
+        else if (element.ValueKind == JsonValueKind.Array)
+        {
+            RenderArray(builder, element, sequence);
+        }
+        else
+        {
+            builder.AddContent(sequence, element.ToString());
+        }
+    }
+
+    private void RenderDbOperationResult(Microsoft.AspNetCore.Components.Rendering.RenderTreeBuilder builder, JsonElement element, int sequence)
+    {
+        var success = element.GetProperty("Success").GetBoolean();
+
+        builder.OpenElement(sequence++, "div");
+        builder.AddAttribute(sequence++, "class", success ? "result-success" : "result-error");
+
+        if (success)
+        {
+            builder.OpenElement(sequence++, "div");
+            builder.AddAttribute(sequence++, "class", "result-status");
+            builder.AddContent(sequence++, "✓ Success");
+            builder.CloseElement();
+
+            if (element.TryGetProperty("Data", out var data) && data.ValueKind != JsonValueKind.Null)
+            {
+                RenderData(builder, data, sequence);
+            }
+
+            if (element.TryGetProperty("RowsAffected", out var rows) && rows.ValueKind != JsonValueKind.Null)
+            {
+                builder.OpenElement(sequence++, "div");
+                builder.AddAttribute(sequence++, "class", "result-info");
+                builder.AddContent(sequence++, $"Rows affected: {rows}");
+                builder.CloseElement();
+            }
+        }
+        else
+        {
+            builder.OpenElement(sequence++, "div");
+            builder.AddAttribute(sequence++, "class", "result-status error");
+            builder.AddContent(sequence++, "✗ Error");
+            builder.CloseElement();
+
+            if (element.TryGetProperty("Error", out var error) && error.ValueKind != JsonValueKind.Null)
+            {
+                builder.OpenElement(sequence++, "div");
+                builder.AddAttribute(sequence++, "class", "error-message");
+                builder.AddContent(sequence++, error.GetString());
+                builder.CloseElement();
+            }
+        }
+
+        builder.CloseElement();
+    }
+
+    private void RenderData(Microsoft.AspNetCore.Components.Rendering.RenderTreeBuilder builder, JsonElement data, int sequence)
+    {
+        if (data.ValueKind == JsonValueKind.Array)
+        {
+            var array = data.EnumerateArray().ToList();
+            if (array.Count > 0)
+            {
+                var firstElement = array[0];
+
+                // Check if it's an array of objects (table-like data)
+                if (firstElement.ValueKind == JsonValueKind.Object)
+                {
+                    RenderTable(builder, array, sequence);
+                }
+                // Check if it's an array of strings (simple list)
+                else if (firstElement.ValueKind == JsonValueKind.String)
+                {
+                    RenderStringList(builder, array, sequence);
+                }
+                else
+                {
+                    RenderArray(builder, data, sequence);
+                }
+            }
+            else
+            {
+                builder.OpenElement(sequence++, "div");
+                builder.AddAttribute(sequence++, "class", "empty-result");
+                builder.AddContent(sequence++, "No data returned");
+                builder.CloseElement();
+            }
+        }
+        else if (data.ValueKind == JsonValueKind.Object)
+        {
+            // Check if this is a ListTables result with schemas
+            if (data.TryGetProperty("schemas", out var schemasProperty) &&
+                schemasProperty.ValueKind == JsonValueKind.Array)
+            {
+                RenderSchemaGroupedTables(builder, data, sequence);
+            }
+            else
+            {
+                RenderObject(builder, data, sequence);
+            }
+        }
+        else
+        {
+            builder.OpenElement(sequence++, "div");
+            builder.AddAttribute(sequence++, "class", "result-value");
+            builder.AddContent(sequence++, data.ToString());
+            builder.CloseElement();
+        }
+    }
+
+    private void RenderTable(Microsoft.AspNetCore.Components.Rendering.RenderTreeBuilder builder, List<JsonElement> rows, int sequence)
+    {
+        if (rows.Count == 0) return;
+
+        // Get all unique column names from all rows
+        var columnNames = new HashSet<string>();
+        foreach (var row in rows)
+        {
+            foreach (var prop in row.EnumerateObject())
+            {
+                columnNames.Add(prop.Name);
+            }
+        }
+
+        var columns = columnNames.OrderBy(c => c).ToList();
+
+        // Store data for export
+        _currentTableData = rows;
+        _currentTableColumns = columns;
+
+        // Add row count badge and export buttons
+        builder.OpenElement(sequence++, "div");
+        builder.AddAttribute(sequence++, "class", "table-info-bar");
+
+        builder.OpenElement(sequence++, "span");
+        builder.AddAttribute(sequence++, "class", "row-count-badge");
+        builder.AddContent(sequence++, $"📊 {rows.Count} row{(rows.Count != 1 ? "s" : "")} × {columns.Count} column{(columns.Count != 1 ? "s" : "")}");
+        builder.CloseElement();
+
+        // Export buttons
+        builder.OpenElement(sequence++, "div");
+        builder.AddAttribute(sequence++, "class", "export-buttons");
+
+        // CSV Export
+        builder.OpenElement(sequence++, "button");
+        builder.AddAttribute(sequence++, "class", "export-btn csv");
+        builder.AddAttribute(sequence++, "onclick", EventCallback.Factory.Create(this, ExportToCsv));
+        builder.AddAttribute(sequence++, "title", "Export as CSV");
+        builder.AddContent(sequence++, "📄 CSV");
+        builder.CloseElement();
+
+        // JSON Export
+        builder.OpenElement(sequence++, "button");
+        builder.AddAttribute(sequence++, "class", "export-btn json");
+        builder.AddAttribute(sequence++, "onclick", EventCallback.Factory.Create(this, ExportToJson));
+        builder.AddAttribute(sequence++, "title", "Export as JSON");
+        builder.AddContent(sequence++, "📋 JSON");
+        builder.CloseElement();
+
+        builder.CloseElement(); // export-buttons
+        builder.CloseElement(); // table-info-bar
+
+        builder.OpenElement(sequence++, "div");
+        builder.AddAttribute(sequence++, "class", "table-container");
+
+        builder.OpenElement(sequence++, "table");
+        builder.AddAttribute(sequence++, "class", "result-table");
+
+        // Header
+        builder.OpenElement(sequence++, "thead");
+        builder.OpenElement(sequence++, "tr");
+        foreach (var col in columns)
+        {
+            builder.OpenElement(sequence++, "th");
+            builder.AddContent(sequence++, col);
+            builder.CloseElement();
+        }
+        builder.CloseElement(); // tr
+        builder.CloseElement(); // thead
+
+        // Body
+        builder.OpenElement(sequence++, "tbody");
+        foreach (var row in rows)
+        {
+            builder.OpenElement(sequence++, "tr");
+            foreach (var col in columns)
+            {
+                builder.OpenElement(sequence++, "td");
+                if (row.TryGetProperty(col, out var value))
+                {
+                    if (value.ValueKind == JsonValueKind.Null)
+                    {
+                        builder.OpenElement(sequence++, "span");
+                        builder.AddAttribute(sequence++, "class", "null-value");
+                        builder.AddContent(sequence++, "NULL");
+                        builder.CloseElement();
+                    }
+                    else
+                    {
+                        builder.AddContent(sequence++, FormatValue(value));
+                    }
+                }
+                else
+                {
+                    builder.OpenElement(sequence++, "span");
+                    builder.AddAttribute(sequence++, "class", "null-value");
+                    builder.AddContent(sequence++, "NULL");
+                    builder.CloseElement();
+                }
+                builder.CloseElement(); // td
+            }
+            builder.CloseElement(); // tr
+        }
+        builder.CloseElement(); // tbody
+
+        builder.CloseElement(); // table
+        builder.CloseElement(); // div
+    }
+
+    private void RenderSchemaGroupedTables(Microsoft.AspNetCore.Components.Rendering.RenderTreeBuilder builder, JsonElement data, int sequence)
+    {
+        var schemas = data.GetProperty("schemas");
+        var totalTables = 0;
+
+        if (data.TryGetProperty("totalTables", out var totalTablesProperty))
+        {
+            totalTables = totalTablesProperty.GetInt32();
+        }
+
+        // Export buttons for all tables
+        builder.OpenElement(sequence++, "div");
+        builder.AddAttribute(sequence++, "class", "table-info-bar");
+
+        builder.OpenElement(sequence++, "span");
+        builder.AddAttribute(sequence++, "class", "row-count-badge");
+        builder.AddContent(sequence++, $"📊 {totalTables} table{(totalTables != 1 ? "s" : "")} across {schemas.GetArrayLength()} schema{(schemas.GetArrayLength() != 1 ? "s" : "")}");
+        builder.CloseElement();
+
+        // Export buttons
+        builder.OpenElement(sequence++, "div");
+        builder.AddAttribute(sequence++, "class", "export-buttons");
+
+        // CSV Export
+        builder.OpenElement(sequence++, "button");
+        builder.AddAttribute(sequence++, "class", "export-btn csv");
+        builder.AddAttribute(sequence++, "onclick", EventCallback.Factory.Create(this, () => ExportSchemaTablesToCsv(schemas)));
+        builder.AddAttribute(sequence++, "title", "Export all tables as CSV");
+        builder.AddContent(sequence++, "📄 CSV");
+        builder.CloseElement();
+
+        // JSON Export
+        builder.OpenElement(sequence++, "button");
+        builder.AddAttribute(sequence++, "class", "export-btn json");
+        builder.AddAttribute(sequence++, "onclick", EventCallback.Factory.Create(this, () => ExportSchemaTablesToJson(schemas)));
+        builder.AddAttribute(sequence++, "title", "Export all tables as JSON");
+        builder.AddContent(sequence++, "📋 JSON");
+        builder.CloseElement();
+
+        // Copy to clipboard
+        builder.OpenElement(sequence++, "button");
+        builder.AddAttribute(sequence++, "class", "export-btn copy");
+        builder.AddAttribute(sequence++, "onclick", EventCallback.Factory.Create(this, () => CopySchemaTablesToCb(schemas)));
+        builder.AddAttribute(sequence++, "title", "Copy tables to clipboard");
+        builder.AddContent(sequence++, "📋 Copy");
+        builder.CloseElement();
+
+        builder.CloseElement(); // export-buttons
+        builder.CloseElement(); // table-info-bar
+
+        // Container for all schemas
+        builder.OpenElement(sequence++, "div");
+        builder.AddAttribute(sequence++, "class", "schema-tables-container");
+
+        foreach (var schemaElement in schemas.EnumerateArray())
+        {
+            var schemaName = schemaElement.GetProperty("schemaName").GetString() ?? "Unknown";
+            var tables = schemaElement.GetProperty("tables").EnumerateArray().ToList();
+
+            // Schema section
+            builder.OpenElement(sequence++, "div");
+            builder.AddAttribute(sequence++, "class", "schema-section");
+
+            // Schema header - format like "User/Application Tables (Identity Schema)"
+            builder.OpenElement(sequence++, "h3");
+            builder.AddAttribute(sequence++, "class", "schema-header");
+            var schemaTitle = FormatSchemaTitle(schemaName);
+            builder.AddContent(sequence++, schemaTitle);
+            builder.CloseElement();
+
+            // Tables table
+            builder.OpenElement(sequence++, "div");
+            builder.AddAttribute(sequence++, "class", "table-container");
+
+            builder.OpenElement(sequence++, "table");
+            builder.AddAttribute(sequence++, "class", "result-table schema-table");
+
+            // Table header
+            builder.OpenElement(sequence++, "thead");
+            builder.OpenElement(sequence++, "tr");
+            builder.OpenElement(sequence++, "th");
+            builder.AddContent(sequence++, "Table Name");
+            builder.CloseElement(); // th
+            builder.CloseElement(); // tr
+            builder.CloseElement(); // thead
+
+            // Table body
+            builder.OpenElement(sequence++, "tbody");
+            foreach (var table in tables)
+            {
+                builder.OpenElement(sequence++, "tr");
+                builder.OpenElement(sequence++, "td");
+                builder.AddContent(sequence++, table.GetString());
+                builder.CloseElement(); // td
+                builder.CloseElement(); // tr
+            }
+            builder.CloseElement(); // tbody
+
+            builder.CloseElement(); // table
+            builder.CloseElement(); // div.table-container
+            builder.CloseElement(); // div.schema-section
+        }
+
+        builder.CloseElement(); // div.schema-tables-container
+    }
+
+    private string FormatSchemaTitle(string schemaName)
+    {
+        // Format schema names into friendly titles
+        return schemaName.ToLower() switch
+        {
+            "identity" => "User/Application Tables (Identity Schema)",
+            "public" => "Business Tables (Public Schema)",
+            _ => $"{schemaName} Tables ({char.ToUpper(schemaName[0]) + schemaName.Substring(1)} Schema)"
+        };
+    }
+
+    private void RenderStringList(Microsoft.AspNetCore.Components.Rendering.RenderTreeBuilder builder, List<JsonElement> items, int sequence)
+    {
+        builder.OpenElement(sequence++, "div");
+        builder.AddAttribute(sequence++, "class", "string-list");
+
+        foreach (var item in items)
+        {
+            builder.OpenElement(sequence++, "div");
+            builder.AddAttribute(sequence++, "class", "list-item-result");
+            builder.AddContent(sequence++, "• " + item.GetString());
+            builder.CloseElement();
+        }
+
+        builder.CloseElement();
+    }
+
+    private void RenderArray(Microsoft.AspNetCore.Components.Rendering.RenderTreeBuilder builder, JsonElement array, int sequence)
+    {
+        builder.OpenElement(sequence++, "div");
+        builder.AddAttribute(sequence++, "class", "json-array");
+
+        var index = 0;
+        foreach (var item in array.EnumerateArray())
+        {
+            builder.OpenElement(sequence++, "div");
+            builder.AddAttribute(sequence++, "class", "array-item");
+            builder.AddContent(sequence++, $"[{index}]: ");
+            RenderJsonElement(builder, item, sequence++);
+            builder.CloseElement();
+            index++;
+        }
+
+        builder.CloseElement();
+    }
+
+    private void RenderObject(Microsoft.AspNetCore.Components.Rendering.RenderTreeBuilder builder, JsonElement obj, int sequence)
+    {
+        builder.OpenElement(sequence++, "div");
+        builder.AddAttribute(sequence++, "class", "json-object");
+
+        foreach (var prop in obj.EnumerateObject())
+        {
+            builder.OpenElement(sequence++, "div");
+            builder.AddAttribute(sequence++, "class", "object-property");
+
+            builder.OpenElement(sequence++, "span");
+            builder.AddAttribute(sequence++, "class", "property-name");
+            builder.AddContent(sequence++, prop.Name + ": ");
+            builder.CloseElement();
+
+            builder.OpenElement(sequence++, "span");
+            builder.AddAttribute(sequence++, "class", "property-value");
+            RenderJsonElement(builder, prop.Value, sequence++);
+            builder.CloseElement();
+
+            builder.CloseElement();
+        }
+
+        builder.CloseElement();
+    }
+
+    private string FormatValue(JsonElement value)
+    {
+        return value.ValueKind switch
+        {
+            JsonValueKind.String => value.GetString() ?? "",
+            JsonValueKind.Number => value.ToString(),
+            JsonValueKind.True => "true",
+            JsonValueKind.False => "false",
+            JsonValueKind.Null => "NULL",
+            _ => value.ToString()
+        };
+    }
+
+    private async Task ExportToCsv()
+    {
+        if (_currentTableData == null || _currentTableColumns == null)
+            return;
+
+        var csv = new StringBuilder();
+
+        // Add header
+        csv.AppendLine(string.Join(",", _currentTableColumns.Select(EscapeCsvValue)));
+
+        // Add rows
+        foreach (var row in _currentTableData)
+        {
+            var values = new List<string>();
+            foreach (var col in _currentTableColumns)
+            {
+                if (row.TryGetProperty(col, out var value))
+                {
+                    values.Add(EscapeCsvValue(FormatValue(value)));
+                }
+                else
+                {
+                    values.Add("");
+                }
+            }
+            csv.AppendLine(string.Join(",", values));
+        }
+
+        var filename = $"export_{DateTime.Now:yyyyMMdd_HHmmss}.csv";
+        await JSRuntime.InvokeVoidAsync("fileDownload.downloadFile", filename, "text/csv", csv.ToString());
+    }
+
+    private string EscapeCsvValue(string value)
+    {
+        if (string.IsNullOrEmpty(value))
+            return "\"\"";
+
+        // Escape quotes and wrap in quotes if contains comma, quote, or newline
+        if (value.Contains(",") || value.Contains("\"") || value.Contains("\n") || value.Contains("\r"))
+        {
+            return "\"" + value.Replace("\"", "\"\"") + "\"";
+        }
+
+        return value;
+    }
+
+    private async Task ExportToJson()
+    {
+        if (_currentTableData == null || _currentTableColumns == null)
+            return;
+
+        var jsonArray = new List<Dictionary<string, object?>>();
+
+        foreach (var row in _currentTableData)
+        {
+            var dict = new Dictionary<string, object?>();
+            foreach (var col in _currentTableColumns)
+            {
+                if (row.TryGetProperty(col, out var value))
+                {
+                    dict[col] = value.ValueKind switch
+                    {
+                        JsonValueKind.String => value.GetString(),
+                        JsonValueKind.Number => value.GetDouble(),
+                        JsonValueKind.True => true,
+                        JsonValueKind.False => false,
+                        JsonValueKind.Null => null,
+                        _ => value.ToString()
+                    };
+                }
+                else
+                {
+                    dict[col] = null;
+                }
+            }
+            jsonArray.Add(dict);
+        }
+
+        var json = JsonSerializer.Serialize(jsonArray, new JsonSerializerOptions
+        {
+            WriteIndented = true
+        });
+
+        var filename = $"export_{DateTime.Now:yyyyMMdd_HHmmss}.json";
+        await JSRuntime.InvokeVoidAsync("fileDownload.downloadFile", filename, "application/json", json);
+    }
+
+    // Export methods for schema-grouped tables
+    private async Task ExportSchemaTablesToCsv(JsonElement schemas)
+    {
+        var csv = new StringBuilder();
+        csv.AppendLine("Schema,Table Name");
+
+        foreach (var schemaElement in schemas.EnumerateArray())
+        {
+            var schemaName = schemaElement.GetProperty("schemaName").GetString() ?? "Unknown";
+            var tables = schemaElement.GetProperty("tables").EnumerateArray();
+
+            foreach (var table in tables)
+            {
+                csv.AppendLine($"{EscapeCsvValue(schemaName)},{EscapeCsvValue(table.GetString() ?? "")}");
+            }
+        }
+
+        var filename = $"tables_by_schema_{DateTime.Now:yyyyMMdd_HHmmss}.csv";
+        await JSRuntime.InvokeVoidAsync("fileDownload.downloadFile", filename, "text/csv", csv.ToString());
+    }
+
+    private async Task ExportSchemaTablesToJson(JsonElement schemas)
+    {
+        var jsonData = new List<Dictionary<string, object>>();
+
+        foreach (var schemaElement in schemas.EnumerateArray())
+        {
+            var schemaName = schemaElement.GetProperty("schemaName").GetString() ?? "Unknown";
+            var tables = schemaElement.GetProperty("tables").EnumerateArray()
+                .Select(t => t.GetString() ?? "")
+                .ToList();
+
+            jsonData.Add(new Dictionary<string, object>
+            {
+                ["schema"] = schemaName,
+                ["tables"] = tables
+            });
+        }
+
+        var json = JsonSerializer.Serialize(jsonData, new JsonSerializerOptions
+        {
+            WriteIndented = true
+        });
+
+        var filename = $"tables_by_schema_{DateTime.Now:yyyyMMdd_HHmmss}.json";
+        await JSRuntime.InvokeVoidAsync("fileDownload.downloadFile", filename, "application/json", json);
+    }
+
+    private async Task CopySchemaTablesToCb(JsonElement schemas)
+    {
+        var text = new StringBuilder();
+
+        foreach (var schemaElement in schemas.EnumerateArray())
+        {
+            var schemaName = schemaElement.GetProperty("schemaName").GetString() ?? "Unknown";
+            var tables = schemaElement.GetProperty("tables").EnumerateArray();
+
+            text.AppendLine($"{FormatSchemaTitle(schemaName)}");
+            text.AppendLine(new string('-', 50));
+
+            foreach (var table in tables)
+            {
+                text.AppendLine($"  • {table.GetString()}");
+            }
+
+            text.AppendLine();
+        }
+
+        await JSRuntime.InvokeVoidAsync("navigator.clipboard.writeText", text.ToString());
+    }
+}
+
+<div class="tool-result-container">
+    @if (!string.IsNullOrEmpty(CallId))
+    {
+        <div class="call-id">Call ID: @CallId</div>
+    }
+    @RenderResult
+</div>
