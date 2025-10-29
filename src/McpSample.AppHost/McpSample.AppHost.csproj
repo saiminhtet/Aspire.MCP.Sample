@@ -19,6 +19,7 @@
 	<ItemGroup>
 		<ProjectReference Include="..\McpSample.AspNetCoreSseServer\McpSample.AspNetCoreSseServer.csproj" />
 		<ProjectReference Include="..\McpSample.Chat\McpSample.BlazorChat.csproj" />
+		<ProjectReference Include="..\McpSample.PostgreSQLMCPServer\McpSample.PostgreSQLMCPServer.csproj" />
 	</ItemGroup>
 
 </Project>
