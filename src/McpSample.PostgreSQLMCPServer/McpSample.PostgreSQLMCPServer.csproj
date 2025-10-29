@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UserSecretsId>c314ff31-5537-4030-8c37-be45ff0226f0</UserSecretsId>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Npgsql" Version="9.0.2" />
+    <PackageReference Include="ModelContextProtocol" Version="0.1.0-preview.10" />
+    <PackageReference Include="ModelContextProtocol.AspNetCore" Version="0.1.0-preview.10" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\McpSample.ServiceDefaults\McpSample.ServiceDefaults.csproj" />
+  </ItemGroup>
+
+</Project>
