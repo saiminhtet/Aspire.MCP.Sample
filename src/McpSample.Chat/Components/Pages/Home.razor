@@ -139,6 +139,8 @@
         string messageTitle = string.Empty;
         string functionResponse = string.Empty;
         var functionCallId = string.Empty;
+        string functionRequest = string.Empty;
+        string toolName = string.Empty;
 
         messageContent = message?.Text ?? string.Empty;
 
@@ -151,6 +153,40 @@
         {
             messageTitle = "Assistant";
             chatBubbleClass = "chat-bubble assistant";
+
+            // Capture function calls for later display with results
+            if (message.Contents != null)
+            {
+                foreach (var content in message.Contents)
+                {
+                    if (content is FunctionCallContent funcCall)
+                    {
+                        var callId = funcCall.CallId ?? Guid.NewGuid().ToString();
+
+                        // Properly serialize arguments to JSON
+                        string args = "{}";
+                        if (funcCall.Arguments != null)
+                        {
+                            try
+                            {
+                                // Serialize the dictionary to JSON
+                                args = JsonSerializer.Serialize(funcCall.Arguments, new JsonSerializerOptions
+                                {
+                                    WriteIndented = true
+                                });
+                            }
+                            catch (Exception ex)
+                            {
+                                Logger.LogWarning($"Failed to serialize function arguments: {ex.Message}");
+                                args = funcCall.Arguments.ToString() ?? "{}";
+                            }
+                        }
+
+                        FunctionCalls[callId] = (funcCall.Name ?? "Unknown", args);
+                        Logger.LogInformation($"Captured function call - CallId: {callId}, Name: {funcCall.Name}, Args: {args.Substring(0, Math.Min(100, args.Length))}");
+                    }
+                }
+            }
 
             // in case of using a reasoning model
             var match = Regex.Match(messageContent, @"<think>(.*?)<\/think>(.*)", RegexOptions.Singleline);
@@ -177,6 +213,14 @@
                 var rawResult = functionResult.Result?.ToString() ?? string.Empty;
                 functionCallId = functionResult.CallId ?? string.Empty;
                 Logger.LogInformation($"Found FunctionResultContent - CallId: {functionCallId}, Raw Result Length: {rawResult.Length}");
+
+                // Look up the corresponding function call
+                if (FunctionCalls.TryGetValue(functionCallId, out var callInfo))
+                {
+                    toolName = callInfo.toolName;
+                    functionRequest = callInfo.arguments;
+                    Logger.LogInformation($"Found matching function call - Name: {toolName}, Args length: {functionRequest.Length}");
+                }
 
                 // The result might be wrapped in a content structure, try to unwrap it
                 @* functionResponse = UnwrapToolResult(rawResult); *@
@@ -239,12 +283,16 @@
                 {
                     <details class="tool-details">
                         <summary class="tool-summary">
-                            <span class="tool-icon">🔧</span>
-                            <span class="tool-label">Tool Result</span>
+                            <span class="tool-icon">P</span>
+                            <span class="tool-label">@toolName</span>
                             <span class="expand-hint">(Click to expand)</span>
                         </summary>
                         <div class="tool-result-wrapper">
-                            <ToolResultRenderer JsonResult="@functionResponse" CallId="@functionCallId" />
+                            <ToolResultRenderer
+                                ToolName="@toolName"
+                                RequestJson="@functionRequest"
+                                JsonResult="@functionResponse"
+                                CallId="@functionCallId" />
                         </div>
                     </details>
                 }
@@ -345,6 +393,7 @@
     [Inject] private IConfiguration Configuration { get; set; } = default!;
     [Inject] private ILogger<Program> Logger { get; set; } = default!;
     private IList<Microsoft.Extensions.AI.ChatMessage> ChatMessages = new List<Microsoft.Extensions.AI.ChatMessage>();
+    private Dictionary<string, (string toolName, string arguments)> FunctionCalls = new Dictionary<string, (string, string)>();
 
     protected override async Task OnInitializedAsync()
     {
@@ -466,14 +515,18 @@
               </tbody>
             </table>
 
-            User: 'Save this as a CSV file for me'
+            User: 'Export these employees to CSV'
             Assistant:
             I've created a downloadable CSV file for you! 📥
 
             <a href=""data:text/csv;charset=utf-8,EmployeeID%2CFull%20Name%2CEmail%2CCreated%20On%0Acd67daf0%2CJohn%20Doe%2Cjohn%40abc.com%2C2025-09-15%0A428ba66d%2CJane%20Smith%2Cjane%40abc.com%2C2025-09-09"" download=""employees_2025.csv"">Download employees_2025.csv</a>
-
-            You can also expand the **Tool Result** section for more export options (JSON, copy to clipboard).
-            "));
+            
+            User: 'Export these employees to JSON'
+            Assistant:
+              Here's your downloadable JSON file! 📥  
+              <a href='data:application/json;charset=utf-8,%5B%7B%22EmployeeID%22%3A%22cd67daf0%22%2C%22Full%20Name%22%3A%22John%20Doe%22%2C%22Email%22%3A%22john%40abc.com%22%2C%22Created%20On%22%3A%222025-09-15%22%7D%2C%7B%22EmployeeID%22%3A%22428ba66d%22%2C%22Full%20Name%22%3A%22Jane%20Smith%22%2C%22Email%22%3A%22jane%40abc.com%22%2C%22Created%20On%22%3A%222025-09-09%22%7D%5D'
+                 download='employees_2025.json'>Download employees_2025.json</a>                    
+"));
     }
 
     private string FormatMessage(string content)
@@ -747,10 +800,14 @@
                     clientMode = "Using OpenAI API and ApiKey";
                     Logger.LogInformation("Using OpenAI API ApiKey");
 
-                    client = new ChatClient(
-                     model: deploymentName, // Or your desired model
-                     apiKey: apiKey
-                    ).AsIChatClient()
+                    var chatClientOptions = new OpenAI.OpenAIClientOptions
+                    {
+                        NetworkTimeout = TimeSpan.FromMinutes(5) // Increase timeout to 5 minutes
+                    };
+
+                    var openAIClient = new OpenAI.OpenAIClient(new System.ClientModel.ApiKeyCredential(apiKey), chatClientOptions);
+                    client = openAIClient.GetChatClient(deploymentName)
+                    .AsIChatClient()
                     .AsBuilder()
                     .UseFunctionInvocation()
                     .Build();

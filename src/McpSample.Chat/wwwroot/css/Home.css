@@ -648,6 +648,64 @@ details {
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
 }
 
+/* Tool result request/response sections */
+.tool-result-container {
+    padding: 0;
+}
+
+.request-section,
+.response-section {
+    margin-bottom: 16px;
+}
+
+.section-header {
+    font-weight: 700;
+    font-size: 0.9em;
+    color: #4a5568;
+    margin-bottom: 8px;
+    padding: 8px 16px;
+    background-color: #f8f9ff;
+    border-left: 4px solid #667eea;
+}
+
+.code-block {
+    background-color: #2d3748;
+    border-radius: 6px;
+    padding: 0;
+    margin: 0;
+    overflow-x: auto;
+}
+
+.code-block pre {
+    margin: 0;
+    padding: 16px;
+    color: #e2e8f0;
+    font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+    font-size: 0.85em;
+    line-height: 1.6;
+    overflow-x: auto;
+}
+
+.code-block code {
+    color: #e2e8f0;
+    font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+}
+
+.response-section .result-success,
+.response-section .result-error,
+.response-section .json-object,
+.response-section .string-list {
+    margin-top: 8px;
+}
+
+.result-success {
+    border-left: 4px solid #10b981;
+}
+
+.result-error {
+    border-left: 4px solid #ef4444;
+}
+
 /* Responsive design */
 @media (max-width: 768px) {
     .chat-container {

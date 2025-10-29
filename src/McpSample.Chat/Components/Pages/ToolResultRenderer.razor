@@ -6,6 +6,12 @@
 
 @code {
     [Parameter]
+    public string? ToolName { get; set; }
+
+    [Parameter]
+    public string? RequestJson { get; set; }
+
+    [Parameter]
     public string? JsonResult { get; set; }
 
     [Parameter]
@@ -620,12 +626,58 @@
 
         await JSRuntime.InvokeVoidAsync("navigator.clipboard.writeText", text.ToString());
     }
+
+    private string FormatRequestJson(string json)
+    {
+        if (string.IsNullOrEmpty(json))
+            return "No request data available";
+
+        try
+        {
+            var doc = JsonDocument.Parse(json);
+            var root = doc.RootElement;
+
+            // Check if there's a SQL property - display it prominently
+            if (root.TryGetProperty("sql", out var sqlProp))
+            {
+                return sqlProp.GetString() ?? json;
+            }
+
+            // Check if there's a query property
+            if (root.TryGetProperty("query", out var queryProp))
+            {
+                return queryProp.GetString() ?? json;
+            }
+
+            // Check if there's a name property (for other tools)
+            if (root.TryGetProperty("name", out var nameProp))
+            {
+                return JsonSerializer.Serialize(root, new JsonSerializerOptions { WriteIndented = true });
+            }
+
+            // Default: return formatted JSON
+            return JsonSerializer.Serialize(root, new JsonSerializerOptions { WriteIndented = true });
+        }
+        catch
+        {
+            return json;
+        }
+    }
 }
 
 <div class="tool-result-container">
-    @if (!string.IsNullOrEmpty(CallId))
+    @if (!string.IsNullOrEmpty(RequestJson))
     {
-        <div class="call-id">Call ID: @CallId</div>
+        <div class="request-section">
+            <div class="section-header">Request</div>
+            <div class="code-block">
+                <pre><code>@FormatRequestJson(RequestJson)</code></pre>
+            </div>
+        </div>
     }
-    @RenderResult
+
+    <div class="response-section">
+        <div class="section-header">Response</div>
+        @RenderResult
+    </div>
 </div>
