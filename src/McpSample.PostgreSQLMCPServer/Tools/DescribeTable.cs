@@ -126,119 +126,111 @@ namespace McpSample.PostgreSQLMCPServer
                 using (conn)
                 {
                     var result = new Dictionary<string, object>();
-                    // Table info
-                    using (var cmd = new NpgsqlCommand(TableInfoQuery, conn))
+
+                    // Use batching for better performance - execute all queries with one command
+                    using var cmd = new NpgsqlCommand($@"
+                        {TableInfoQuery};
+                        {ColumnsQuery};
+                        {IndexesQuery};
+                        {ConstraintsQuery};
+                        {ForeignKeyInformation};
+                    ", conn);
+
+                    cmd.Parameters.AddWithValue("@TableName", name);
+                    cmd.Parameters.AddWithValue("@TableSchema", schema);
+
+                    using var reader = await cmd.ExecuteReaderAsync();
+
+                    // Read table info (first result set)
+                    if (await reader.ReadAsync())
                     {
-                        cmd.Parameters.AddWithValue("@TableName", name);
-                        cmd.Parameters.AddWithValue("@TableSchema", schema);
-                        using var reader = await cmd.ExecuteReaderAsync();
-                        if (await reader.ReadAsync())
+                        result["table"] = new
                         {
-                            result["table"] = new
-                            {
-                                id = reader["id"],
-                                name = reader["name"],
-                                schema = reader["schema"],
-                                owner = reader["owner"],
-                                type = reader["type"],
-                                description = reader["description"] is DBNull ? null : reader["description"]
-                            };
-                        }
-                        else
-                        {
-                            return new DbOperationResult(success: false, error: $"Table '{name}' not found in schema '{schema}'.");
-                        }
+                            id = reader["id"],
+                            name = reader["name"],
+                            schema = reader["schema"],
+                            owner = reader["owner"],
+                            type = reader["type"],
+                            description = reader["description"] is DBNull ? null : reader["description"]
+                        };
                     }
-                    // Columns
-                    using (var cmd = new NpgsqlCommand(ColumnsQuery, conn))
+                    else
                     {
-                        cmd.Parameters.AddWithValue("@TableName", name);
-                        cmd.Parameters.AddWithValue("@TableSchema", schema);
-                        using var reader = await cmd.ExecuteReaderAsync();
-                        var columns = new List<object>();
-                        while (await reader.ReadAsync())
-                        {
-                            columns.Add(new
-                            {
-                                name = reader["name"],
-                                type = reader["type"],
-                                length = reader["length"],
-                                precision = reader["precision"],
-                                scale = reader["scale"],
-                                nullable = (bool)reader["nullable"],
-                                description = reader["description"] is DBNull ? null : reader["description"]
-                            });
-                        }
-                        result["columns"] = columns;
-                    }
-                    // Indexes
-                    using (var cmd = new NpgsqlCommand(IndexesQuery, conn))
-                    {
-                        cmd.Parameters.AddWithValue("@TableName", name);
-                        cmd.Parameters.AddWithValue("@TableSchema", schema);
-                        using var reader = await cmd.ExecuteReaderAsync();
-                        var indexes = new List<object>();
-                        while (await reader.ReadAsync())
-                        {
-                            indexes.Add(new
-                            {
-                                name = reader["name"],
-                                type = reader["type"],
-                                description = reader["description"] is DBNull ? null : reader["description"],
-                                keys = reader["keys"]
-                            });
-                        }
-                        result["indexes"] = indexes;
-                    }
-                    // Constraints
-                    using (var cmd = new NpgsqlCommand(ConstraintsQuery, conn))
-                    {
-                        cmd.Parameters.AddWithValue("@TableName", name);
-                        cmd.Parameters.AddWithValue("@TableSchema", schema);
-                        using var reader = await cmd.ExecuteReaderAsync();
-                        var constraints = new List<object>();
-                        while (await reader.ReadAsync())
-                        {
-                            var conType = reader["type"].ToString();
-                            var typeDesc = conType switch
-                            {
-                                "p" => "PRIMARY KEY",
-                                "u" => "UNIQUE",
-                                "c" => "CHECK",
-                                _ => conType
-                            };
-                            constraints.Add(new
-                            {
-                                name = reader["name"],
-                                type = typeDesc,
-                                keys = reader["keys"]
-                            });
-                        }
-                        result["constraints"] = constraints;
+                        return new DbOperationResult(success: false, error: $"Table '{name}' not found in schema '{schema}'.");
                     }
 
-                    // Foreign Keys
-                    using (var cmd = new NpgsqlCommand(ForeignKeyInformation, conn))
+                    // Read columns (second result set)
+                    await reader.NextResultAsync();
+                    var columns = new List<object>();
+                    while (await reader.ReadAsync())
                     {
-                        cmd.Parameters.AddWithValue("@TableName", name);
-                        cmd.Parameters.AddWithValue("@TableSchema", schema);
-                        using var reader = await cmd.ExecuteReaderAsync();
-                        var foreignKeys = new List<object>();
-                        while (await reader.ReadAsync())
+                        columns.Add(new
                         {
-                            foreignKeys.Add(new
-                            {
-                                name = reader["name"],
-                                schema = reader["schema"],
-                                table_name = reader["table_name"],
-                                column_name = reader["column_names"],
-                                referenced_schema = reader["referenced_schema"],
-                                referenced_table = reader["referenced_table"],
-                                referenced_column = reader["referenced_column_names"],
-                            });
-                        }
-                        result["foreignKeys"] = foreignKeys;
+                            name = reader["name"],
+                            type = reader["type"],
+                            length = reader["length"],
+                            precision = reader["precision"],
+                            scale = reader["scale"],
+                            nullable = (bool)reader["nullable"],
+                            description = reader["description"] is DBNull ? null : reader["description"]
+                        });
                     }
+                    result["columns"] = columns;
+
+                    // Read indexes (third result set)
+                    await reader.NextResultAsync();
+                    var indexes = new List<object>();
+                    while (await reader.ReadAsync())
+                    {
+                        indexes.Add(new
+                        {
+                            name = reader["name"],
+                            type = reader["type"],
+                            description = reader["description"] is DBNull ? null : reader["description"],
+                            keys = reader["keys"]
+                        });
+                    }
+                    result["indexes"] = indexes;
+
+                    // Read constraints (fourth result set)
+                    await reader.NextResultAsync();
+                    var constraints = new List<object>();
+                    while (await reader.ReadAsync())
+                    {
+                        var conType = reader["type"].ToString();
+                        var typeDesc = conType switch
+                        {
+                            "p" => "PRIMARY KEY",
+                            "u" => "UNIQUE",
+                            "c" => "CHECK",
+                            _ => conType
+                        };
+                        constraints.Add(new
+                        {
+                            name = reader["name"],
+                            type = typeDesc,
+                            keys = reader["keys"]
+                        });
+                    }
+                    result["constraints"] = constraints;
+
+                    // Read foreign keys (fifth result set)
+                    await reader.NextResultAsync();
+                    var foreignKeys = new List<object>();
+                    while (await reader.ReadAsync())
+                    {
+                        foreignKeys.Add(new
+                        {
+                            name = reader["name"],
+                            schema = reader["schema"],
+                            table_name = reader["table_name"],
+                            column_name = reader["column_names"],
+                            referenced_schema = reader["referenced_schema"],
+                            referenced_table = reader["referenced_table"],
+                            referenced_column = reader["referenced_column_names"],
+                        });
+                    }
+                    result["foreignKeys"] = foreignKeys;
 
                     return new DbOperationResult(success: true, data: result);
                 }

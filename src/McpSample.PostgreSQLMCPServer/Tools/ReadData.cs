@@ -24,6 +24,8 @@ namespace McpSample.PostgreSQLMCPServer
                     using var cmd = new NpgsqlCommand(sql, conn);
                     using var reader = await cmd.ExecuteReaderAsync();
                     var results = new List<Dictionary<string, object?>>();
+                    var decryptionErrors = new List<string>();
+
                     while (await reader.ReadAsync())
                     {
                         var row = new Dictionary<string, object?>();
@@ -32,24 +34,31 @@ namespace McpSample.PostgreSQLMCPServer
                             var value = reader.IsDBNull(i) ? null : reader.GetValue(i);
 
                             // Auto-detect and decrypt encrypted string values
-                            if (value is string stringValue && AESGCMEncryption.IsEncrypted(stringValue))
+                            if (value is string stringValue)
                             {
-                                try
+                                var (success, decryptedValue, error) = AESGCMEncryption.TryDecryptWithError(stringValue);
+
+                                if (!success && error != null)
                                 {
-                                    value = AESGCMEncryption.TryDecrypt(stringValue);
-                                    _logger.LogDebug("Successfully decrypted column: {ColumnName}", reader.GetName(i));
+                                    var errorMsg = $"Column '{reader.GetName(i)}': {error}";
+                                    decryptionErrors.Add(errorMsg);
+                                    _logger.LogWarning("Decryption failed for column {ColumnName}: {Error}", reader.GetName(i), error);
                                 }
-                                catch (Exception ex)
-                                {
-                                    _logger.LogWarning(ex, "Failed to decrypt column {ColumnName}, returning original value", reader.GetName(i));
-                                    // Keep original value on decryption failure
-                                }
+
+                                value = decryptedValue;
                             }
 
                             row[reader.GetName(i)] = value;
                         }
                         results.Add(row);
                     }
+
+                    // Log summary of decryption errors if any occurred
+                    if (decryptionErrors.Count > 0)
+                    {
+                        _logger.LogWarning("Total decryption errors: {Count}", decryptionErrors.Count);
+                    }
+
                     return new DbOperationResult(success: true, data: results);
                 }
             }

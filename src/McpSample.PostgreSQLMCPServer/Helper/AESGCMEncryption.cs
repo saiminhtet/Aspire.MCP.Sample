@@ -1,4 +1,5 @@
 ﻿using System.Security.Cryptography;
+using System.Collections.Concurrent;
 
 namespace McpSample.PostgreSQLMCPServer.Helper
 {
@@ -25,6 +26,10 @@ namespace McpSample.PostgreSQLMCPServer.Helper
         private const string _CIPHER_LIMITER_V1 = "|||||||";
 
         private static readonly int _ITERATION = ((DateTime.Now.Year * 11) - 10007);//supposed to increment at least once every 2 years, cannot be whole year never restart server/app
+
+        // Cache for decrypted values to improve performance
+        private static readonly ConcurrentDictionary<string, string?> _decryptionCache = new(StringComparer.Ordinal);
+        private const int MAX_CACHE_SIZE = 10000;
 
         public static string? Encrypt(string? rawVal)
         {
@@ -99,6 +104,7 @@ namespace McpSample.PostgreSQLMCPServer.Helper
 
         /// <summary>
         /// Checks if a string value appears to be encrypted (contains the cipher delimiter)
+        /// Optimized to check for delimiter more efficiently
         /// </summary>
         public static bool IsEncrypted(string? value)
         {
@@ -107,11 +113,19 @@ namespace McpSample.PostgreSQLMCPServer.Helper
                 return false;
             }
 
-            return value.Contains(_CIPHER_LIMITER_V1);
+            // Quick length check - encrypted values are always longer than delimiter
+            if (value.Length < 20) // Minimum realistic encrypted string length
+            {
+                return false;
+            }
+
+            // Use IndexOf which is faster than Contains for this use case
+            return value.IndexOf(_CIPHER_LIMITER_V1, StringComparison.Ordinal) >= 0;
         }
 
         /// <summary>
         /// Attempts to decrypt a value, returning the original value if decryption fails
+        /// Uses caching to improve performance for repeated values
         /// </summary>
         public static string? TryDecrypt(string? encryptedVal)
         {
@@ -120,15 +134,78 @@ namespace McpSample.PostgreSQLMCPServer.Helper
                 return encryptedVal;
             }
 
+            // Check cache first
+            if (_decryptionCache.TryGetValue(encryptedVal, out var cachedValue))
+            {
+                return cachedValue;
+            }
+
             try
             {
-                return Decrypt(encryptedVal);
+                var decrypted = Decrypt(encryptedVal);
+
+                // Add to cache if not too large
+                if (_decryptionCache.Count < MAX_CACHE_SIZE)
+                {
+                    _decryptionCache.TryAdd(encryptedVal, decrypted);
+                }
+
+                return decrypted;
             }
-            catch
+            catch (Exception ex)
             {
+                // Log the specific error for debugging
+                System.Diagnostics.Debug.WriteLine($"Decryption failed: {ex.Message}");
                 // Return original value if decryption fails
                 return encryptedVal;
             }
+        }
+
+        /// <summary>
+        /// Attempts to decrypt a value with detailed error information
+        /// </summary>
+        public static (bool Success, string? Value, string? Error) TryDecryptWithError(string? encryptedVal)
+        {
+            if (encryptedVal == null)
+            {
+                return (true, null, null);
+            }
+
+            if (!IsEncrypted(encryptedVal))
+            {
+                return (true, encryptedVal, null);
+            }
+
+            // Check cache first
+            if (_decryptionCache.TryGetValue(encryptedVal, out var cachedValue))
+            {
+                return (true, cachedValue, null);
+            }
+
+            try
+            {
+                var decrypted = Decrypt(encryptedVal);
+
+                // Add to cache if not too large
+                if (_decryptionCache.Count < MAX_CACHE_SIZE)
+                {
+                    _decryptionCache.TryAdd(encryptedVal, decrypted);
+                }
+
+                return (true, decrypted, null);
+            }
+            catch (Exception ex)
+            {
+                return (false, encryptedVal, $"Decryption failed: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Clears the decryption cache
+        /// </summary>
+        public static void ClearCache()
+        {
+            _decryptionCache.Clear();
         }
 
         static string DecryptStringFromBytes_AesGcm(string cipherText, byte[] key, byte[] associatedData)
