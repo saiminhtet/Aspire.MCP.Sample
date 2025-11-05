@@ -14,4 +14,9 @@ var blazorchat = builder
     .WithReference(postgresqlmcpserver)
     .WithExternalHttpEndpoints();
 
+var llmchatapi = builder
+    .AddProject<Projects.LLM_Chat_API>("llm-chat-api")
+    .WithReference(postgresqlmcpserver)
+    .WithExternalHttpEndpoints();
+
 builder.Build().Run();
