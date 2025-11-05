@@ -91,25 +91,66 @@ public class ChatController : ControllerBase
             var response = await _chatClient.GetResponseAsync(aiMessages, new() { Tools = [.. tools] });
             _logger.LogInformation($"AI response received with {response.Messages.Count} messages");
 
-            // Extract assistant message
-            var assistantResponse = response.Messages.FirstOrDefault(m => m.Role == ChatRole.Assistant);
+            // Log all messages in the response for debugging
+            foreach (var msg in response.Messages)
+            {
+                _logger.LogInformation($"Response Message - Role: {msg.Role}, HasText: {!string.IsNullOrEmpty(msg.Text)}, ContentCount: {msg.Contents?.Count ?? 0}");
+            }
+
+            // Extract the LAST assistant message (after tool execution)
+            // When UseFunctionInvocation is used, response.Messages contains:
+            // 1. Assistant message with tool call (no text)
+            // 2. Tool message with result
+            // 3. Final assistant message with response text
+            var assistantResponse = response.Messages.LastOrDefault(m => m.Role == ChatRole.Assistant);
             string aiContent = assistantResponse?.Text ?? "I'm sorry, I couldn't process that request.";
 
-            // Create assistant message
-            var aiMessage = new Models.ChatMessage
+            _logger.LogInformation($"Final assistant response: {aiContent}");
+
+            // Track which MCP tools were used
+            var toolsUsed = response.Messages
+                .Where(m => m.Role == ChatRole.Tool)
+                .SelectMany(m => m.Contents ?? new List<AIContent>())
+                .OfType<FunctionResultContent>()
+                .Select(f => f.CallId ?? "unknown")
+                .ToList();
+
+            // Add all response messages to session (tool calls, tool results, and final response)
+            foreach (var msg in response.Messages)
             {
-                Id = $"msg-{DateTime.UtcNow.Ticks}-assistant",
-                Role = "assistant",
-                Content = aiContent,
-                Timestamp = DateTime.UtcNow.ToString("o"),
-                Metadata = new MessageMetadata
+                var msgRole = msg.Role.Value switch
                 {
-                    Model = _chatClient.GetType().Name,
-                    TokensUsed = 0, // You can calculate this if available
-                    McpToolsUsed = new List<string>()
+                    "assistant" => "assistant",
+                    "tool" => "tool",
+                    _ => "assistant"
+                };
+
+                var msgContent = msg.Text ?? string.Empty;
+
+                // For tool messages, extract the result
+                if (msg.Role == ChatRole.Tool && msg.Contents?.Any() == true)
+                {
+                    var toolResult = msg.Contents.OfType<FunctionResultContent>().FirstOrDefault();
+                    if (toolResult != null)
+                    {
+                        msgContent = $"Tool: {toolResult.CallId}\nResult: {toolResult.Result}";
+                    }
                 }
-            };
-            session.Messages.Add(aiMessage);
+
+                session.Messages.Add(new Models.ChatMessage
+                {
+                    Id = $"msg-{DateTime.UtcNow.Ticks}-{msgRole}-{Guid.NewGuid()}",
+                    Role = msgRole,
+                    Content = msgContent,
+                    Timestamp = DateTime.UtcNow.ToString("o"),
+                    Metadata = new MessageMetadata
+                    {
+                        Model = _chatClient.GetType().Name,
+                        TokensUsed = 0,
+                        McpToolsUsed = msgRole == "assistant" ? toolsUsed : new List<string>()
+                    }
+                });
+            }
 
             // Save session
             _dbService.UpdateSession(session);
@@ -121,9 +162,19 @@ public class ChatController : ControllerBase
                 "What else can you help with?"
             };
 
+            // Get the last assistant message to return to the client
+            var finalMessage = session.Messages.LastOrDefault(m => m.Role == "assistant")
+                ?? new Models.ChatMessage
+                {
+                    Id = $"msg-{DateTime.UtcNow.Ticks}-assistant",
+                    Role = "assistant",
+                    Content = "I'm sorry, I couldn't process that request.",
+                    Timestamp = DateTime.UtcNow.ToString("o")
+                };
+
             var responseData = new SendMessageResponse
             {
-                Message = aiMessage,
+                Message = finalMessage,
                 SessionId = session.Id,
                 Suggestions = suggestions
             };

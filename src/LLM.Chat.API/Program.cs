@@ -64,8 +64,16 @@ try
 
         var name = $"services__{apiServiceName}__https__0";
         var baseUrl = Environment.GetEnvironmentVariable(name);
+
+        if (string.IsNullOrEmpty(baseUrl))
+        {
+            logger.Error($"Environment variable '{name}' is not set. Make sure LLM.Chat.API is running through Aspire AppHost.");
+            throw new InvalidOperationException($"Environment variable '{name}' is not set. The MCP server reference may not be configured correctly in the Aspire AppHost.");
+        }
+
         var url = baseUrl + "/sse";
 
+        logger.Info($"Environment variable '{name}' = {baseUrl}");
         logger.Info($"Connecting to MCP server at: {url}");
 
         SseClientTransportOptions sseTransportOptions = new()
